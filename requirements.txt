@@ -1,0 +1,6 @@
+requests
+psutil
+PyJWT
+protobuf
+Flask
+urllib3
