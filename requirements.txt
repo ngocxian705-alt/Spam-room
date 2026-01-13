@@ -1,7 +1,9 @@
+flask
 requests
 psutil
 PyJWT
-protobuf
-Flask
 urllib3
+protobuf
 protobuf-decoder
+pycryptodome
+gunicorn
