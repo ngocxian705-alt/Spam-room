@@ -4,3 +4,4 @@ PyJWT
 protobuf
 Flask
 urllib3
+protobuf-decoder
