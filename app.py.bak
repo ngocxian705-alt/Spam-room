@@ -1,0 +1,351 @@
+import requests, os, psutil, sys, jwt, pickle, json, binascii, time, urllib3, xKEys, base64, datetime, re, socket, threading
+import asyncio
+from protobuf_decoder.protobuf_decoder import Parser
+from byte import *
+from byte import xSEndMsg
+from byte import Auth_Chat
+from xHeaders import *
+from datetime import datetime
+from google.protobuf.timestamp_pb2 import Timestamp
+from concurrent.futures import ThreadPoolExecutor
+from threading import Thread
+from flask import Flask, request, jsonify
+from black9 import openroom, spmroom
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)  
+
+
+connected_clients = {}
+connected_clients_lock = threading.Lock()
+
+
+active_spam_targets = {}
+active_spam_lock = threading.Lock()
+
+
+app = Flask(__name__)
+
+class SimpleAPI:
+    def __init__(self):
+        self.running = True
+        
+    def process_spam_command(self, target_id, duration_minutes=None):
+        try:
+            if not ChEck_Commande(target_id):
+                return {"status": "error", "message": " user_id غير صالح"}
+                
+            
+            with active_spam_lock:
+                if target_id not in active_spam_targets:
+                    active_spam_targets[target_id] = {
+                        'active': True,
+                        'start_time': datetime.now(),
+                        'duration': duration_minutes
+                    }
+                    threading.Thread(target=spam_worker, args=(target_id, duration_minutes), daemon=True).start()
+                    message = f" تم بدء السبام على المستخدم: {target_id}"
+                    if duration_minutes:
+                        message += f" لمدة {duration_minutes} دقيقة"
+                    return {"status": "success", "message": message}
+                else:
+                    return {"status": "error", "message": f" السبام يعمل بالفعل على المستخدم: {target_id}"}
+                    
+        except Exception as e:
+            return {"status": "error", "message": f" خطأ في معالجة الأمر: {str(e)}"}
+            
+    def process_stop_command(self, target_id):
+        try:
+            with active_spam_lock:
+                if target_id in active_spam_targets:
+                    del active_spam_targets[target_id]
+                    message = f" تم إيقاف السبام على المستخدم: {target_id}"
+                    return {"status": "success", "message": message}
+                else:
+                    return {"status": "error", "message": f" لا يوجد سبام نشط على المستخدم: {target_id}"}
+                    
+        except Exception as e:
+            return {"status": "error", "message": f" خطأ في معالجة الأمر: {str(e)}"}
+            
+    def get_status(self):
+        try:
+            with active_spam_lock:
+                active_targets = list(active_spam_targets.keys())
+                active_targets_info = []
+                for target_id in active_targets:
+                    info = active_spam_targets[target_id]
+                    duration_info = ""
+                    if info['duration']:
+                        elapsed = datetime.now() - info['start_time']
+                        remaining = info['duration'] * 60 - elapsed.total_seconds()
+                        if remaining > 0:
+                            duration_info = f" ({int(remaining/60)} دقيقة متبقية)"
+                    active_targets_info.append(f"{target_id}{duration_info}")
+                    
+            with connected_clients_lock:
+                accounts_count = len(connected_clients)
+                accounts_list = list(connected_clients.keys())
+                
+            status_data = {
+                "active_targets_count": len(active_targets),
+                "active_targets": active_targets_info,
+                "connected_accounts_count": accounts_count,
+                "connected_accounts": accounts_list
+            }
+            
+            return {"status": "success", "data": status_data}
+            
+        except Exception as e:
+            return {"status": "error", "message": f" خطأ في الحصول على الحالة: {str(e)}"}
+
+def spam_worker(target_id, duration_minutes=None):
+    print(f" بدء السبام trên mục tiêu: {target_id}" + (f" trong {duration_minutes} phút" if duration_minutes else ""))
+    
+    start_time = datetime.now()
+    
+    while True:
+        with active_spam_lock:
+            if target_id not in active_spam_targets:
+                print(f"️ Dừng spam trên mục tiêu: {target_id}")
+                break
+                
+            if duration_minutes:
+                elapsed = datetime.now() - start_time
+                if elapsed.total_seconds() >= duration_minutes * 60:
+                    print(f" Hết thời gian spam: {target_id}")
+                    del active_spam_targets[target_id]
+                    break
+                
+        try:
+            send_spam_from_all_accounts(target_id)
+            time.sleep(0.1)  
+        except Exception as e:
+            print(f" Lỗi spam {target_id}: {e}")
+            time.sleep(1)
+
+def send_spam_from_all_accounts(target_id):
+    with connected_clients_lock:
+        for account_id, client in connected_clients.items():
+            try:
+                if (hasattr(client, 'CliEnts2') and client.CliEnts2 and 
+                    hasattr(client, 'key') and client.key and 
+                    hasattr(client, 'iv') and client.iv):
+                    
+                    try:
+                        client.CliEnts2.send(openroom(client.key, client.iv))
+                    except Exception: pass
+                    
+                    for i in range(10):  
+                        try:
+                            client.CliEnts2.send(spmroom(client.key, client.iv, target_id))
+                        except Exception: break
+                else:
+                    print(f" Account {account_id} not active.")
+            except Exception as e:
+                print(f" Lỗi gửi từ {account_id}: {e}")
+
+
+api = SimpleAPI()
+
+@app.route('/spam', methods=['GET'])
+def start_spam():
+    target_id = request.args.get('user_id')
+    duration = request.args.get('duration', type=int)
+    if not target_id:
+        return jsonify({"status": "error", "message": "Missing user_id"})
+    result = api.process_spam_command(target_id, duration)
+    return jsonify(result)
+
+@app.route('/stop', methods=['GET'])
+def stop_spam():
+    target_id = request.args.get('user_id')
+    if not target_id:
+        return jsonify({"status": "error", "message": "Missing user_id"})
+    result = api.process_stop_command(target_id)
+    return jsonify(result)
+
+@app.route('/status', methods=['GET'])
+def get_status():
+    result = api.get_status()
+    return jsonify(result)
+
+@app.route('/accounts', methods=['GET'])
+def get_accounts():
+    try:
+        with connected_clients_lock:
+            accounts_count = len(connected_clients)
+            accounts_list = list(connected_clients.keys())
+        return jsonify({"status": "success", "data": {"count": accounts_count, "accounts": accounts_list}})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+@app.route('/')
+def home():
+    return "<h1>Bot Management API</h1><p>Spam only works via API call.</p>"
+
+def run_api():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port, debug=False)
+
+def AuTo_ResTartinG():
+    time.sleep(6 * 60 * 60)
+    p = psutil.Process(os.getpid())
+    for handler in p.open_files():
+        try: os.close(handler.fd)
+        except: pass
+    for conn in p.net_connections():
+        try:
+            if hasattr(conn, 'fd'): os.close(conn.fd)
+        except: pass
+    python = sys.executable
+    os.execl(python, python, *sys.argv)
+       
+def ResTarT_BoT():
+    p = psutil.Process(os.getpid())
+    for handler in p.open_files():
+        try: os.close(handler.fd)
+        except: pass           
+    for conn in p.net_connections():
+        try: conn.close()
+        except: pass
+    python = sys.executable
+    os.execl(python, python, *sys.argv)
+
+def GeT_Time(timestamp):
+    last_login = datetime.fromtimestamp(timestamp)
+    now = datetime.now()
+    diff = now - last_login   
+    return diff.days, diff.seconds // 3600, (diff.seconds % 3600) // 60, diff.seconds % 60
+
+def load_accounts_from_file(filename="accs.txt"):
+    accounts = []
+    try:
+        with open(filename, "r", encoding="utf-8") as file:
+            for line in file:
+                line = line.strip()
+                if line and not line.startswith("#"):  
+                    if ":" in line:
+                        parts = line.split(":")
+                        accounts.append({'id': parts[0].strip(), 'password': parts[1].strip()})
+                    else:
+                        accounts.append({'id': line.strip(), 'password': ''})
+    except: pass
+    return accounts
+
+ACCOUNTS = load_accounts_from_file()
+            
+class FF_CLient():
+    def __init__(self, id, password):
+        self.id = id
+        self.password = password
+        self.key = None
+        self.iv = None
+        self.Get_FiNal_ToKen_0115()     
+            
+    def Connect_SerVer_OnLine(self , Token , tok , host , port , key , iv , host2 , port2):
+        try:
+            self.CliEnts2 = socket.create_connection((host2 , int(port2)))
+            self.CliEnts2.send(bytes.fromhex(tok))                  
+        except:pass        
+        while True:
+            try:
+                self.DaTa2 = self.CliEnts2.recv(99999)
+                if '0500' in self.DaTa2.hex()[0:4] and len(self.DaTa2.hex()) > 30:	         	    	    
+                    self.packet = json.loads(DeCode_PackEt(f'08{self.DaTa2.hex().split("08", 1)[1]}'))
+                    self.AutH = self.packet['5']['data']['7']['data']
+            except:pass    	
+                                                            
+    def Connect_SerVer(self , Token , tok , host , port , key , iv , host2 , port2):
+        try:
+            self.CliEnts = socket.create_connection((host , int(port)))
+            self.CliEnts.send(bytes.fromhex(tok))  
+            self.DaTa = self.CliEnts.recv(1024)          	        
+            threading.Thread(target=self.Connect_SerVer_OnLine, args=(Token, tok, host, port, key, iv, host2, port2), daemon=True).start()
+            self.key, self.iv = key, iv
+            with connected_clients_lock:
+                connected_clients[self.id] = self
+                print(f" Account {self.id} Connected.")
+            
+            while True:      
+                self.DaTa = self.CliEnts.recv(1024)   
+                if len(self.DaTa) == 0:
+                    break
+                # ĐÃ LOẠI BỎ LOGIC /pp/ TẠI ĐÂY - CHỈ NHẬN DỮ LIỆU ĐỂ GIỮ KẾT NỐI
+        except:
+            time.sleep(5)
+            self.Connect_SerVer(Token , tok , host , port , key , iv , host2 , port2)
+
+    def GeT_Key_Iv(self , serialized_data):
+        my_message = xKEys.MyMessage()
+        my_message.ParseFromString(serialized_data)
+        timestamp = my_message.field21 
+        timestamp_obj = Timestamp()
+        timestamp_obj.FromNanoseconds(timestamp)
+        return timestamp_obj.seconds * 1_000_000_000 + timestamp_obj.nanos, my_message.field22, my_message.field23    
+
+    def Guest_GeneRaTe(self , uid , password):
+        self.url = "https://100067.connect.garena.com/oauth/guest/token/grant"
+        self.headers = {"User-Agent": "GarenaMSDK/4.0.19P4", "Content-Type": "application/x-www-form-urlencoded"}
+        self.dataa = {"uid": uid, "password": password, "response_type": "token", "client_id": "100067"}
+        try:
+            self.response = requests.post(self.url, headers=self.headers, data=self.dataa).json()
+            return self.ToKen_GeneRaTe(self.response['access_token'], self.response['open_id'])
+        except:
+            time.sleep(10)
+            return self.Guest_GeneRaTe(uid, password)
+                                        
+    def GeT_LoGin_PorTs(self , JwT_ToKen , PayLoad):
+        self.UrL = 'https://clientbp.ggwhitehawk.com/GetLoginData'
+        try:
+            self.Res = requests.post(self.UrL, headers={'Authorization': f'Bearer {JwT_ToKen}'}, data=PayLoad, verify=False)
+            self.BesTo_data = json.loads(DeCode_PackEt(self.Res.content.hex()))  
+            address, address2 = self.BesTo_data['32']['data'], self.BesTo_data['14']['data'] 
+            return address[:len(address)-6], address[len(address)-5:], address2[:len(address2)-6], address2[len(address2)-5:]
+        except: return None, None, None, None
+        
+    def ToKen_GeneRaTe(self , Access_ToKen , Access_Uid):
+        self.UrL = "https://loginbp.ggwhitehawk.com/MajorLogin"
+        # (PHẦN HEX DATA DƯỚI ĐÂY ĐƯỢC GIỮ NGUYÊN HOÀN TOÀN)
+        self.dT = bytes.fromhex('1a13323032352d31302d33312030353a31383a3235220966726565206669726528013a07312e3131382e344232416e64726f6964204f532039202f204150492d3238202850492f72656c2e636a772e32303232303531382e313134313333294a0848616e6468656c64520c4d544e2f537061636574656c5a045749464960800a68d00572033234307a2d7838362d3634205353453320535345342e3120535345342e32204156582041565832207c2032343030207c20348001e61e8a010f416472656e6f2028544d292036343092010d4f70656e474c20455320332e329a012b476f6f676c657c36323566373136662d393161372d343935622d396631362d303866653964336336353333a2010d3137362e32382e3133352e3233aa01026172b201203433303632343537393364653836646134323561353263616164663231656564ba010134c2010848616e6468656c64ca010d4f6e65506c7573204135303130ea014034653739616666653331343134393031353434656161626562633437303537333866653638336139326464346335656533646233333636326232653936363466f00101ca020c4d544e2f537061636574656cd2020457494649ca03203161633462383065636630343738613434323033626638666163363132306635e003b5ee02e803ff8502f003af13f803840780048c95028804b5ee0290048c95029804b5ee02b00404c80401d2043d2f646174612f6170702f636f6d2e6474732e667265656669726574682d66705843537068495636644b43376a4c2d574f7952413d3d2f6c69622f61726de00401ea045f65363261623933353464386662356662303831646233333861636233333439317c2f646174612f6170702f636f6d2e6474732e667265656669726574682d66705843537068495636644b43376a4c2d574f7952413d3d2f626173652e61706bf00406f804018a050233329a050a32303139313139303236a80503b205094f70656e474c455332b805ff01c00504e005c466ea05093372645f7061727479f80583e4068806019006019a060134a2060134b2062211541141595f58011f53594c59584056143a5f535a525c6b5c04096e595c3b000e61')
+        self.dT = self.dT.replace(b'2025-07-30 14:11:20' , str(datetime.now())[:-7].encode())        
+        self.dT = self.dT.replace(b'4e79affe31414901544eaabebc4705738fe683a92dd4c5ee3db33662b2e9664f' , Access_ToKen.encode())
+        self.dT = self.dT.replace(b'4306245793de86da425a52caadf21eed' , Access_Uid.encode())
+        try:
+            encoded_data = EnC_AEs(self.dT.hex())
+            self.PaYload = bytes.fromhex(encoded_data)
+        except: self.PaYload = self.dT
+        self.ResPonse = requests.post(self.UrL, headers={'User-Agent': 'UnityPlayer/2022.3.47f1'}, data=self.PaYload, verify=False)        
+        if self.ResPonse.status_code == 200:
+            self.BesTo_data = json.loads(DeCode_PackEt(self.ResPonse.content.hex()))
+            self.JwT_ToKen = self.BesTo_data['8']['data']           
+            ts , key , iv = self.GeT_Key_Iv(self.ResPonse.content)
+            ip , port , ip2 , port2 = self.GeT_LoGin_PorTs(self.JwT_ToKen , self.PaYload)            
+            return self.JwT_ToKen, key, iv, ts, ip, port, ip2, port2
+        return self.ToKen_GeneRaTe(Access_ToKen, Access_Uid)
+      
+    def Get_FiNal_ToKen_0115(self):
+        try:
+            token, key, iv, ts, ip, port, ip2, port2 = self.Guest_GeneRaTe(self.id , self.password)
+            self.JwT_ToKen = token        
+            decoded = jwt.decode(token, options={"verify_signature": False})
+            self.AccounT_Uid = decoded.get('account_id')
+            self.EncoDed_AccounT = hex(self.AccounT_Uid)[2:]
+            self.Header = hex(len(EnC_PacKeT(token.encode().hex(), key, iv)) // 2)[2:]
+            length = len(self.EncoDed_AccounT)
+            __ = '00000000'
+            if length == 9: __ = '0000000'
+            elif length == 10: __ = '000000'
+            self.FiNal_ToKen_0115 = f'0115{__}{self.EncoDed_AccounT}{DecodE_HeX(ts)}00000{self.Header}' + EnC_PacKeT(token.encode().hex(), key, iv)
+            self.Connect_SerVer(token, self.FiNal_ToKen_0115, ip, port, key, iv, ip2, port2)        
+        except:
+            time.sleep(10)
+            self.Get_FiNal_ToKen_0115()
+
+def StarT_SerVer():
+    Thread(target=run_api, daemon=True).start()
+    for account in ACCOUNTS:
+        Thread(target=FF_CLient, args=(account['id'], account['password']), daemon=True).start()
+        time.sleep(3)
+    while True: time.sleep(3600)
+
+if __name__ == "__main__":
+    StarT_SerVer()
